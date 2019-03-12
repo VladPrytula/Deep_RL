@@ -1,4 +1,4 @@
-![](https://cwiki.apache.org/confluence/download/attachments/69406797/inProgress.gif?version=1&modificationDate=1493416081000&api=v2  | width=48)
+![](https://cwiki.apache.org/confluence/download/attachments/69406797/inProgress.gif?version=1&modificationDate=1493416081000&api=v2)
 
 
 ### The first steps of Reinforcement learning journey (from Cartpole to Doom). 

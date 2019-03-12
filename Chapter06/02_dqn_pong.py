@@ -107,3 +107,14 @@ class Agent:
 
         return done_reward ## TODO: why do we return only done reward_
         
+
+def calc_loss(batch, net, tgt_net, device='cpu'):
+    states, actions, rewards, dones, next_states = batch
+
+    states_v = torch.tensor(states).to(device)
+    next_states_v = torch.tensor(next_states).to(device)
+    actions_v = torch.tensor(actions).to(device)
+    rewards_v = torch.tensor(rewards).to(device)
+    done_mask = torch.ByteTensor(dones).to(device)
+    
+    # pass actions to the first model and extract speicific Q-values for taken actions using gather()

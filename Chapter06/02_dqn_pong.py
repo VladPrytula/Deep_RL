@@ -118,3 +118,9 @@ def calc_loss(batch, net, tgt_net, device='cpu'):
     done_mask = torch.ByteTensor(dones).to(device)
     
     # pass actions to the first model and extract speicific Q-values for taken actions using gather()
+    state_action_values = net(states_v)
+    # what gather does is explained here
+    # https://stackoverflow.com/questions/50999977/what-does-the-gather-function-do-in-pytorch-in-layman-terms
+    
+    # what are we getting as an output of the net(states_v):
+    # The output of the model is Q-values for every action available in the environment, 

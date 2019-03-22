@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 from lib import wrappers
 from lib import dqn_model
@@ -51,6 +52,7 @@ class ExperienceBuffer:
     we create a list of random indices and then repack the sampled entries into 
     NumPy arrays for more convenient loss calculation
     """
+
     def __init__(self, capacity):
         self.buffer = collections.deque(maxlen=capacity)
 
@@ -65,7 +67,7 @@ class ExperienceBuffer:
         states, actions, rewards, dones, next_states = zip(
             *[self.buffer[idx] for idx in indices])
         return np.array(states), np.array(actions), np.array(rewards, dtype=np.float32), \
-                np.array(dones, dtype=np.uint8), np.array(next_states)
+            np.array(dones, dtype=np.uint8), np.array(next_states)
 
 
 class Agent:
@@ -73,6 +75,7 @@ class Agent:
     Agent, which interacts with the environment and saves the result of the interaction 
     into the experience replay buffer (see above):
     """
+
     def __init__(self, env, exp_buffer):
         self.env = env
         self.exp_buffer = exp_buffer
@@ -81,7 +84,6 @@ class Agent:
     def _reset(self):
         self.state = env.reset()
         self.total_reward = 0.0
-
 
     def play_step(self, net, epsilon=0.0, device="cpu"):
         done_reward = None
@@ -94,7 +96,11 @@ class Agent:
             _, act_v = torch.max(q_vals_v, dim=1)
             action = int(act_v.item())
 
-        new_state, reward, is_done, _ = self.env(action)
+        # print(type(env))
+        # print('-----')
+        # print(env.action_space)
+        # print('-----')
+        new_state, reward, is_done, _ = self.env.step(action)
         self.total_reward += reward
         new_state = new_state
 
@@ -105,8 +111,8 @@ class Agent:
             done_reward = self.total_reward
             self._reset()
 
-        return done_reward ## TODO: why do we return only done reward_
-        
+        return done_reward  # TODO: why do we return only done reward_
+
 
 def calc_loss(batch, net, tgt_net, device='cpu'):
     states, actions, rewards, dones, next_states = batch
@@ -116,11 +122,98 @@ def calc_loss(batch, net, tgt_net, device='cpu'):
     actions_v = torch.tensor(actions).to(device)
     rewards_v = torch.tensor(rewards).to(device)
     done_mask = torch.ByteTensor(dones).to(device)
-    
+
     # pass actions to the first model and extract speicific Q-values for taken actions using gather()
-    state_action_values = net(states_v)
+    state_action_values = net(states_v).gather(
+        1, actions_v.unsqueeze(-1)).squeeze(-1)
     # what gather does is explained here
     # https://stackoverflow.com/questions/50999977/what-does-the-gather-function-do-in-pytorch-in-layman-terms
-    
+
     # what are we getting as an output of the net(states_v):
-    # The output of the model is Q-values for every action available in the environment, 
+    # The output of the model is Q-values for every action available in the environment,
+
+    next_state_values = tgt_net(next_states_v).max(1)[0]
+    next_state_values[done_mask] = 0.0
+    next_state_values = next_state_values.detach()
+
+    expected_state_action_values = next_state_values * GAMMA + rewards_v
+    return nn.MSELoss()(state_action_values, expected_state_action_values)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--cuda", default=False,
+                        action="store_true", help="Enable cuda")
+    parser.add_argument("--env", default=DEFAULT_ENV_NAME,
+                        help="Name of the environment, default=" + DEFAULT_ENV_NAME)
+    parser.add_argument("--reward", type=float, default=MEAN_REWARD_BOUND,
+                        help="Mean reward boundary for stop of training, default=%.2f" % MEAN_REWARD_BOUND)
+    args = parser.parse_args()
+    device = torch.device("cuda" if args.cuda else "cpu")
+    print(device)
+
+    env = wrappers.make_env(args.env)
+    print(env)
+    print('env observation space is {}'.format(env.observation_space.shape))
+    print(env.action_space.n)
+
+    net = dqn_model.DQN(env.observation_space.shape,
+                        env.action_space.n).to(device)
+    tgt_net = dqn_model.DQN(env.observation_space.shape,
+                            env.action_space.n).to(device)
+    writer = SummaryWriter(comment="-" + args.env)
+    print(net)
+
+    buffer = ExperienceBuffer(REPLAY_SIZE)
+    agent = Agent(env, buffer)
+    epsilon = EPSILON_START
+
+    optimizer = optim.Adam(net.parameters(), lr=LEARNING_RATE)
+    total_rewards = []
+    frame_idx = 0
+    ts_frame = 0
+    ts = time.time()
+    best_mean_reward = None
+
+    while True:
+        frame_idx += 1
+        epsilon = max(EPSILON_FINAL, EPSILON_START -
+                      frame_idx / EPSILON_DECAY_LAST_FRAME)
+
+        reward = agent.play_step(net, epsilon, device=device)
+        if reward is not None:
+            total_rewards.append(reward)
+            speed = (frame_idx - ts_frame) / (time.time() - ts)
+            ts_frame = frame_idx
+            ts = time.time()
+            mean_reward = np.mean(total_rewards[-100:])
+            print("%d: done %d games, mean reward %.3f, eps %.2f, speed %.2f f/s" % (
+                frame_idx, len(total_rewards), mean_reward, epsilon,
+                speed
+            ))
+            writer.add_scalar("epsilon", epsilon, frame_idx)
+            writer.add_scalar("speed", speed, frame_idx)
+            writer.add_scalar("reward_100", mean_reward, frame_idx)
+            writer.add_scalar("reward", reward, frame_idx)
+            if best_mean_reward is None or best_mean_reward < mean_reward:
+                torch.save(net.state_dict(), args.env + "-best.dat")
+                if best_mean_reward is not None:
+                    print("Best mean reward updated %.3f -> %.3f, model saved" %
+                          (best_mean_reward, mean_reward))
+                best_mean_reward = mean_reward
+            if mean_reward > args.reward:
+                print("Solved in %d frames!" % frame_idx)
+                break
+
+        if len(buffer) < REPLAY_START_SIZE:
+            continue
+
+        if frame_idx % SYNC_TARGET_FRAMES == 0:
+            tgt_net.load_state_dict(net.state_dict())
+
+        optimizer.zero_grad()
+        batch = buffer.sample(BATCH_SIZE)
+        loss_t = calc_loss(batch, net, tgt_net, device=device)
+        loss_t.backward()
+        optimizer.step()
+    writer.close()
